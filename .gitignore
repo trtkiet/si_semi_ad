@@ -1,0 +1,5 @@
+*.pyc
+*.pth
+__pycache__/
+results/
+testings/
