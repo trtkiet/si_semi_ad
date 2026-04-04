@@ -165,8 +165,8 @@ def main():
     parser.add_argument("--d", type=int, default=8)
     parser.add_argument("--mu", type=float, default=0.0)
     parser.add_argument("--n", type=int, default=1000)
-    parser.add_argument("--anomaly-rate", type=float, default=0.0)
-    parser.add_argument("--known-label-rate", type=float, default=0.2)
+    parser.add_argument("--anomaly-rate", type=float, default=0.05)
+    parser.add_argument("--known-label-rate", type=float, default=0.1)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument(
         "--h-dims", type=str, default="128,64,32", help="Hidden dims, comma-separated"

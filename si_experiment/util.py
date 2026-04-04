@@ -149,29 +149,40 @@ def load_models(
 
     return deepsad_model, deepsad_c, device
 
+def normal_interval_prob(left, right, mu, sigma):
+    z_left = (left - mu) / sigma
+    z_right = (right - mu) / sigma
+    
+    tail_left = 0.5 * mp.erfc(z_left / mp.sqrt(2))
+    tail_right = 0.5 * mp.erfc(z_right / mp.sqrt(2))
+    
+    return tail_left - tail_right
 
 def truncated_cdf(mu, sigma, intervals, O, etajTX):
     numerator = 0
     denominator = 0
     for left, right, Oz in intervals:
+        # print(f"Processing interval [{left}, {right}] with Oz: {Oz}")
+        # print(f"Matching O: {np.array_equal(O, Oz)}")
         if np.array_equal(O, Oz) is False:
             if (etajTX >= left) and (etajTX < right):
                 print(f"Different found Oz: {Oz}, O: {O}")
             continue
 
         denominator = (
-            denominator + mp.ncdf((right - mu) / sigma) - mp.ncdf((left - mu) / sigma)
+            denominator + normal_interval_prob(left, right, mu, sigma)
         )
         if etajTX >= right:
             numerator = (
-                numerator + mp.ncdf((right - mu) / sigma) - mp.ncdf((left - mu) / sigma)
+                numerator + normal_interval_prob(left, right, mu, sigma)
             )
         if (etajTX >= left) and (etajTX < right):
             numerator = (
                 numerator
-                + mp.ncdf((etajTX - mu) / sigma)
-                - mp.ncdf((left - mu) / sigma)
+                + normal_interval_prob(left, etajTX, mu, sigma)
             )
+        # print(f"Interval [{left}, {right}]: numerator={numerator}, denominator={denominator}")
+        # print(f"Value of truncated CDF for this interval: {normal_interval_prob(left, right, mu, sigma)}")
     if denominator != 0:
         return float(numerator / denominator)
     return None

@@ -7,6 +7,7 @@ def get_model_intervals(model, intervals, eps=1e-9):
     layers = parse_model(model)
 
     for layer_type, params in layers:
+        # print(f"Processing layer: {layer_type}")
         if layer_type == "Linear":
             W, bias = params
             new_intervals = []

@@ -17,7 +17,7 @@ def main():
         "--delta", type=float, default=0.0, help="Delta parameter for data generation"
     )
     parser.add_argument("--n", type=int, default=150, help="Number of instances")
-    parser.add_argument("--d", type=int, default=8, help="Feature dimension")
+    parser.add_argument("--d", type=int, default=10, help="Feature dimension")
     parser.add_argument(
         "--mu", type=float, default=0.0, help="Mu parameter for data generation"
     )
@@ -94,7 +94,7 @@ def main():
             device=device,
         )
         if p_value is None:
-            break
+            continue
         p_values.append(p_value)
 
     end = time.time()
