@@ -105,6 +105,32 @@ def get_model_intervals(model, intervals, eps=1e-9):
                     new_intervals.append((sub_left, sub_right, a_new, b_new))
 
             intervals = new_intervals
+        elif layer_type == "BatchNorm1d":
+            gamma, beta, running_mean, running_var, bn_eps = params
+            new_intervals = []
+            
+            if running_var is None or running_mean is None:
+                print("Warning: BatchNorm1d layer is missing running statistics. Skipping normalization.")
+            # Precompute the effective scale and shift
+            # scale[i] = gamma[i] / sqrt(var[i] + eps)   (or 1.0 if gamma is None)
+            # shift[i] = beta[i] - mean[i] * scale[i]    (or 0.0 if beta/mean are None)
+            scale = np.ones_like(running_var) if running_var is None else 1.0 / np.sqrt(running_var + bn_eps)
+            if gamma is not None:
+                scale = gamma * scale
+
+            shift = np.zeros_like(scale) if running_mean is None else -running_mean * scale
+            if beta is not None:
+                shift = shift + beta
+
+            for left, right, a_curr, b_curr in intervals:
+                # BN is element-wise: output_i = scale_i * input_i + shift_i
+                # a_new = scale * a_curr + shift  (bias term absorbs shift)
+                # b_new = scale * b_curr          (slope is unaffected by shift)
+                a_new = scale * a_curr + shift
+                b_new = scale * b_curr
+                new_intervals.append((left, right, a_new, b_new))
+            
+            intervals = new_intervals
 
     intervals = sorted(intervals, key=lambda x: x[0])
     return intervals

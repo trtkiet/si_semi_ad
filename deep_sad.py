@@ -24,12 +24,12 @@ class Linear_BN_leakyReLU(nn.Module):
     def __init__(self, in_features, out_features, bias=False, eps=1e-04):
         super().__init__()
         self.linear = nn.Linear(in_features, out_features, bias=bias)
-        # self.bn = nn.BatchNorm1d(out_features, eps=eps, affine=bias)
+        self.bn = nn.BatchNorm1d(out_features, eps=eps, affine=bias)
         self.leaky_relu = nn.LeakyReLU()
 
     def forward(self, x):
-        # return F.leaky_relu(self.bn(self.linear(x)))
-        return self.leaky_relu(self.linear(x))
+        return F.leaky_relu(self.bn(self.linear(x)))
+        # return self.leaky_relu(self.linear(x))
 
 
 class MLP(BaseNet):

@@ -1,9 +1,11 @@
 import numpy as np
 import torch
 
-from .detection import anomaly_detection, get_ad_intervals
+from .detection import anomaly_detection, get_ad_intervals_fast
 from .dnn import get_model_intervals
-from .util import gen_data, load_models, truncated_cdf
+from .util import gen_data, load_models, truncated_cdf, compute_etajTsigmaetaj_a_b
+
+import time
 
 
 def run(
@@ -17,8 +19,9 @@ def run(
     top_k_percent: float = 0.05,
     deepsad_encoder=None,
     deepsad_c=None,
-    device=None,
+    device=None,    
 ):
+    start = time.time()
     np.random.seed(seed)
     torch.manual_seed(seed)
 
@@ -44,7 +47,7 @@ def run(
     j = np.random.choice(O)
 
     mu_vec = np.full((n * d, 1), mu)
-    sigma = np.identity(n * d)
+    # sigma = np.identity(n * d)
 
     etj = np.zeros((n * d, 1))
     etOc = np.zeros((n * d, 1))
@@ -66,16 +69,13 @@ def run(
     # print(f"etaj^T x for seed {seed}: {etajTx[0][0]}")
 
     mu_vec = np.full((n * d, 1), mu)
-    sigma = np.identity(n * d)
     etajTmu = etaj.T.dot(mu_vec)
-    etajTsigmaetaj = etaj.T.dot(sigma).dot(etaj)
+    etajTsigmaetaj, a, b = compute_etajTsigmaetaj_a_b(etaj, etajTx, X, n, d, S=None)
     # print(f"etaj^T sigma etaj for seed {seed}: {etajTsigmaetaj[0][0]}")
-
-    b = sigma @ etaj @ np.linalg.inv(etajTsigmaetaj)
-    a = (np.identity(n * d) - b @ etaj.T) @ X.reshape(-1, 1)
-
-    a = a.reshape(-1, d)
-    b = b.reshape(-1, d)
+    # print(f"Shapes of a and b for seed {seed}: {a.shape}, {b.shape}")
+    
+    a = a.reshape(n, d)
+    b = b.reshape(n, d)
 
     avg_x_oc = np.mean(X[Oc, :], axis=0)
     mean_a_oc = np.mean(a[Oc, :], axis=0)
@@ -98,20 +98,23 @@ def run(
 
     itv[0] = itv[0].item() if isinstance(itv[0], np.ndarray) else itv[0]
     itv[1] = itv[1].item() if isinstance(itv[1], np.ndarray) else itv[1]
-    print(f"Initial interval for seed {seed}: {itv}")
+    # print(f"Initial interval for seed {seed}: {itv}")
     if etajTx[0][0] > itv[1]:
         return 0.0
 
     intervals = [(itv[0], itv[1], a, b)]
     intervals = get_model_intervals(deepsad_encoder, intervals)
-    # print(f"Length of intervals after DNN processing for seed {seed}: {len(intervals)}")
-    intervals = get_ad_intervals(
+    print(f"Length of intervals after DNN processing for seed {seed}: {len(intervals)}")
+    # print(f"Time after DNN processing for seed {seed}: {time.time() - start} seconds")
+    intervals = get_ad_intervals_fast(
         intervals, top_k_percent=top_k_percent, deepsad_c=deepsad_c
     )
     print(f"Length of intervals after AD processing for seed {seed}: {len(intervals)}")
+    # print(f"Time after AD processing for seed {seed}: {time.time() - start} seconds")
     final_intervals = []
     for left, right, Oz in intervals:
         Oz = [i for i in Oz if known_y[i] == -1 or (known_y[i] == 1 and true_y[i] == 0)]
+        Oz = sorted(Oz)
         final_intervals.append((left / np.sqrt(etajTsigmaetaj[0][0]), right / np.sqrt(etajTsigmaetaj[0][0]), Oz))
 
     cdf = truncated_cdf(

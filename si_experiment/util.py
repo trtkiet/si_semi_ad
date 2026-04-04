@@ -186,3 +186,18 @@ def truncated_cdf(mu, sigma, intervals, O, etajTX):
     if denominator != 0:
         return float(numerator / denominator)
     return None
+
+def compute_etajTsigmaetaj_a_b(etaj, etajTx, X, n, d, S=None):
+    if S is None:
+        S = np.eye(d)                          # special case: sigma = I_{n*d}
+    etaj_blocks = etaj.reshape(n, d)           # (n, d)
+    S_etaj = etaj_blocks @ S.T                 # (n, d)
+    etajTsigmaetaj = np.einsum('ij,ij->', etaj_blocks, S_etaj).reshape(1, 1)
+    
+    
+    S_etaj_flat = S_etaj.reshape(-1, 1)                                     # (n*d, 1)
+    b = S_etaj_flat / etajTsigmaetaj                                        # (n*d, 1)
+
+    X_flat = X.reshape(-1, 1)
+    a = X_flat - b * etajTx    
+    return etajTsigmaetaj, a, b
