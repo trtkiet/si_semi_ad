@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from .detection import anomaly_detection, get_ad_intervals_fast
+from .detection import anomaly_detection, get_ad_intervals_fast, top_k_normal_indices, get_top_k_normal_intervals
 from .dnn.dnn import get_model_intervals as get_model_intervals_cpu
 from .dnn_gpu.dnn import get_model_intervals as get_model_intervals_gpu
 from .dnn_para.dnn import get_model_intervals as get_model_intervals_para
@@ -19,6 +19,7 @@ def run(
     anomaly_rate: float = 0.0,
     known_label_rate: float = 0.2,
     top_k_percent: float = 0.05,
+    top_k_normal_percent: float = 0.3,
     deepsad_encoder=None,
     deepsad_c=None,
     device: str = "auto",
@@ -66,7 +67,10 @@ def run(
     #     print(f"No anomalies in seed {seed}, skipping...")
     #     return None
     # j = np.random.choice(true_O)
-    Oc = [i for i in range(n) if i not in O]
+    Oc = top_k_normal_indices(X, top_k_percent=top_k_normal_percent, deepsad_encoder=deepsad_encoder, deepsad_c=deepsad_c)
+    for i in range(n):
+        if known_y[i] == 1 and true_y[i] == 0 and i not in Oc:
+            Oc.append(i)
 
     j = np.random.choice(O)
 
@@ -159,25 +163,28 @@ def run(
 
     print(f"Length of intervals after DNN processing for seed {seed}: {len(intervals)}")
     print(f"Time after DNN processing for seed {seed}: {time.time() - start} seconds")
-    intervals = get_ad_intervals_fast(
-        intervals, top_k_percent=top_k_percent, deepsad_c=deepsad_c
+    intervals = get_top_k_normal_intervals(
+        intervals, top_k_percent=top_k_normal_percent, deepsad_c=deepsad_c
     )
     print(f"Length of intervals after AD processing for seed {seed}: {len(intervals)}")
     print(f"Time after AD processing for seed {seed}: {time.time() - start} seconds")
     final_intervals = []
-    for left, right, Oz in intervals:
-        Oz = [i for i in Oz if known_y[i] == -1 or (known_y[i] == 1 and true_y[i] == 0)]
-        Oz = sorted(Oz)
+    known_normals = set(i for i in range(n) if known_y[i] == 1 and true_y[i] == 0)
+    for left, right, Ocz in intervals:
+        Ocz = set(Ocz)
+        Ocz = Ocz.union(known_normals)
+        Ocz = [i for i in Ocz]
+        Ocz = sorted(Ocz)
         final_intervals.append(
             (
                 left / np.sqrt(etajTsigmaetaj[0][0]),
                 right / np.sqrt(etajTsigmaetaj[0][0]),
-                Oz,
+                Ocz,
             )
         )
 
     cdf = truncated_cdf(
-        0, 1, final_intervals, O, etajTx[0][0] / np.sqrt(etajTsigmaetaj[0][0])
+        0, 1, final_intervals, Oc, etajTx[0][0] / np.sqrt(etajTsigmaetaj[0][0])
     )
     if cdf is None:
         print(f"Warning: CDF computation failed for seed {seed}. Skipping this run.")

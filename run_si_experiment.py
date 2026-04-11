@@ -56,7 +56,7 @@ def main():
     parser.add_argument(
         "--h-dims",
         type=str,
-        default="128,128,128,64,64,64,32,32,32",
+        default="128,64,32",
         help="Hidden dims for the model, comma-separated",
     )
     parser.add_argument(
@@ -81,6 +81,12 @@ def main():
         default="normal",
         choices=["normal", "oc", "bonferonni", "bonferroni"],
         help="Experiment method: normal (si.run), oc (si.run_oc), bonferonni (si.run_bonfer)",
+    )
+    parser.add_argument(
+        "--top-k-normal-percent",
+        type=float,
+        default=0.3,
+        help="Top k percent for selecting normal instances",
     )
     args = parser.parse_args()
 
