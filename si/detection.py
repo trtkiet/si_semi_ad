@@ -239,7 +239,7 @@ def get_top_k_normal_intervals(intervals, top_k_percent, deepsad_c):
                 roots = [-dc / db] if abs(db) > 1e-16 else []
             else:
                 disc = db * db - 4.0 * da * dc
-                if disc <= eps:
+                if disc <= -eps:
                     return None
                 sq = math.sqrt(max(0.0, disc))
                 roots = [(-db - sq) / (2 * da), (-db + sq) / (2 * da)]
