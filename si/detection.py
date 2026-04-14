@@ -245,11 +245,7 @@ def get_top_k_normal_intervals(intervals, top_k_percent, deepsad_c):
                 roots = [(-db - sq) / (2 * da), (-db + sq) / (2 * da)]
 
             for z in sorted(roots):
-                if z <= z_min + eps or z > right + 1e-9:
-                    continue
-                # Confirm direction: d_i - d_j goes negative → positive here
-                z_t = z + eps
-                if da * z_t * z_t + db * z_t + dc > 0.0:
+                if z > z_min:
                     return z
             return None
 

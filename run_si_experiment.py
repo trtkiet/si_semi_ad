@@ -8,6 +8,7 @@ from scipy.stats import kstest
 
 from si import load_models
 from si import run as run_normal
+from si.util import load_odds_data_for_si, ODDS_DATASET_NAMES
 
 
 def main():
@@ -23,9 +24,6 @@ def main():
         "--mu", type=float, default=0.0, help="Mu parameter for data generation"
     )
     parser.add_argument("--anomaly-rate", type=float, default=0.0, help="Anomaly rate")
-    parser.add_argument(
-        "--known-label-rate", type=float, default=0.2, help="Known label rate"
-    )
     parser.add_argument(
         "--top-k-percent",
         type=float,
@@ -46,6 +44,12 @@ def main():
         type=str,
         default="models",
         help="Directory containing model checkpoints",
+    )
+    parser.add_argument(
+        "--covariance-dir",
+        type=str,
+        default="covariances",
+        help="Directory containing saved covariance matrices",
     )
     parser.add_argument(
         "--model-name",
@@ -79,7 +83,7 @@ def main():
         "--method",
         type=str,
         default="normal",
-        choices=["normal", "oc", "bonferonni", "bonferroni"],
+        choices=["normal", "oc", "bonferonni", "bonferroni", "naive", "no-inference"],
         help="Experiment method: normal (si.run), oc (si.run_oc), bonferonni (si.run_bonfer)",
     )
     parser.add_argument(
@@ -88,14 +92,44 @@ def main():
         default=0.3,
         help="Top k percent for selecting normal instances",
     )
+    parser.add_argument(
+        "--dataset-name",
+        type=str,
+        default=None,
+        choices=ODDS_DATASET_NAMES,
+        help="ODDS dataset name. If omitted, synthetic data generation is used.",
+    )
+    parser.add_argument(
+        "--data-root",
+        type=str,
+        default="data",
+        help="Directory where ODDS .mat files are stored/downloaded.",
+    )
+    parser.add_argument(
+        "--test-index-class",
+        type=str,
+        default="normal",
+        choices=["normal", "anomaly"],
+        help="Class of selected test point j.",
+    )
+    parser.add_argument(
+        "--target-p-values",
+        type=int,
+        default=None,
+        help="If set and --seed is omitted, keep increasing seeds from 0 until this many accepted p-values are collected.",
+    )
     args = parser.parse_args()
 
     if args.method == "normal":
         run_fn = run_normal
     elif args.method == "oc":
         from si.run_oc import run as run_fn
-    else:
+    elif args.method in {"bonferonni", "bonferroni"}:
         from si.run_bonfer import run as run_fn
+    elif args.method == "naive":
+        from si.run_naive import run as run_fn
+    elif args.method == "no-inference":
+        from si.run_no_inference import run as run_fn
 
     os.makedirs(args.results_dir, exist_ok=True)
 
@@ -109,47 +143,120 @@ def main():
     if device == "cuda" and not torch.cuda.is_available():
         raise ValueError("CUDA was requested but is not available.")
 
-    h_dims = [int(x) for x in args.h_dims.split(",")]
+    h_dims = [int(x.strip()) for x in args.h_dims.split(",")]
+    model_input_dim = args.d
+    if args.dataset_name is not None:
+        X_probe, _, _ = load_odds_data_for_si(
+            dataset_name=args.dataset_name,
+            root=args.data_root,
+            random_state=0,
+            known_label_rate=0.0,
+        )
+        model_input_dim = X_probe.shape[1]
+
     deepsad_encoder, deepsad_c, _ = load_models(
         device=device,
         model_dir=args.model_dir,
         model_name=args.model_name,
-        d=args.d,
+        d=model_input_dim,
         h_dims=h_dims,
         rep_dim=args.rep_dim,
     )
+
+    covariance_path = os.path.join(args.covariance_dir, f"{args.model_name}_cov.npy")
+    Sigma = None
+    if os.path.exists(covariance_path):
+        Sigma = np.load(covariance_path)
+        expected_shape = (model_input_dim, model_input_dim)
+        if Sigma.shape != expected_shape:
+            raise ValueError(
+                f"Covariance shape mismatch at {covariance_path}: "
+                f"expected {expected_shape}, got {Sigma.shape}"
+            )
+    else:
+        print(f"Warning: covariance file not found at {covariance_path}. Falling back to identity.")
 
     p_values = []
     times = []
 
     if args.seed is None:
-        seeds = range(args.n_seeds)
+        if args.target_p_values is None:
+            seeds = range(args.n_seeds)
+            seed_mode = "range"
+        else:
+            if args.target_p_values <= 0:
+                raise ValueError("--target-p-values must be > 0")
+            seeds = None
+            seed_mode = "until-target"
     else:
         if args.seed < 0:
             raise ValueError("--seed must be >= 0")
         seeds = [args.seed]
+        seed_mode = "single"
 
-    for seed in seeds:
-        start = time.time()
-        p_value = run_fn(
-            seed=seed,
-            delta=args.delta,
-            n=args.n,
-            mu=args.mu,
-            d=args.d,
-            anomaly_rate=args.anomaly_rate,
-            known_label_rate=args.known_label_rate,
-            top_k_percent=args.top_k_percent,
-            deepsad_encoder=deepsad_encoder,
-            deepsad_c=deepsad_c,
-            device=args.device,
-        )
-        if p_value is None:
-            continue
-        p_values.append(p_value)
-        times.append(time.time() - start)
+    FPR = 0
+    if seed_mode == "until-target":
+        seed = 0
+        while len(p_values) < args.target_p_values:
+            start = time.time()
+            p_value = run_fn(
+                seed=seed,
+                delta=args.delta,
+                n=args.n,
+                mu=args.mu,
+                d=args.d,
+                anomaly_rate=args.anomaly_rate,
+                top_k_percent=args.top_k_percent,
+                deepsad_encoder=deepsad_encoder,
+                deepsad_c=deepsad_c,
+                device=args.device,
+                dataset_name=args.dataset_name,
+                data_root=args.data_root,
+                test_index_class=args.test_index_class,
+                Sigma=Sigma,
+            )
+            seed += 1
+            if p_value is None:
+                continue
+            p_values.append(p_value)
+            if p_value < 0.05:
+                FPR += 1
+            times.append(time.time() - start)
+    else:
+        for seed in seeds:
+            start = time.time()
+            p_value = run_fn(
+                seed=seed,
+                delta=args.delta,
+                n=args.n,
+                mu=args.mu,
+                d=args.d,
+                anomaly_rate=args.anomaly_rate,
+                top_k_percent=args.top_k_percent,
+                deepsad_encoder=deepsad_encoder,
+                deepsad_c=deepsad_c,
+                device=args.device,
+                dataset_name=args.dataset_name,
+                data_root=args.data_root,
+                test_index_class=args.test_index_class,
+                Sigma=Sigma,
+            )
+            if p_value is None:
+                continue
+            p_values.append(p_value)
+            if p_value < 0.05:
+                FPR += 1
+            times.append(time.time() - start)
 
-    dir_name = f"{args.model_name}_delta_{args.delta}_n_{args.n}_method_{args.method}"
+    print(f"Collected {len(p_values)} p-values with FPR: {FPR / len(p_values) if len(p_values) > 0 else 0:.4f}")
+    if len(p_values) == 0:
+        raise RuntimeError("No valid p-values were produced.")
+
+    if args.dataset_name is None:
+        suffix = f"delta_{args.delta}_n_{args.n}"
+    else:
+        suffix = f"dataset_{args.dataset_name}"
+    dir_name = f"{args.model_name}_{suffix}_method_{args.method}_{args.test_index_class}"
     print(f"Results for {dir_name}:")
     # Create result dir if it doesn't exist
     os.makedirs(os.path.join(args.results_dir, dir_name), exist_ok=True)
@@ -161,7 +268,7 @@ def main():
             f.write(f"{t}\n")
 
     # Save results
-    result_prefix = f"delta_{args.delta}_n_{args.n}"
+    result_prefix = suffix
 
     with open(os.path.join(args.results_dir, dir_name, f"p_values.txt"), "w") as f:
         for p in p_values:
@@ -189,6 +296,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import torch
-
     main()

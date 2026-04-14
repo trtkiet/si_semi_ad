@@ -5,7 +5,14 @@ from .detection import anomaly_detection, get_ad_intervals_fast, top_k_normal_in
 from .dnn.dnn import get_model_intervals as get_model_intervals_cpu
 from .dnn_gpu.dnn import get_model_intervals as get_model_intervals_gpu
 from .dnn_para.dnn import get_model_intervals as get_model_intervals_para
-from .util import gen_data, load_models, truncated_cdf, compute_etajTsigmaetaj_a_b
+from .util import (
+    gen_data,
+    load_models,
+    truncated_cdf,
+    compute_etajTsigmaetaj_a_b,
+    load_odds_data_for_si,
+    load_known_normal_data
+)
 
 import time
 
@@ -17,12 +24,15 @@ def run(
     mu: float = 0,
     d: int = 8,
     anomaly_rate: float = 0.0,
-    known_label_rate: float = 0.2,
     top_k_percent: float = 0.05,
     top_k_normal_percent: float = 0.3,
     deepsad_encoder=None,
     deepsad_c=None,
     device: str = "auto",
+    dataset_name: str = None,
+    data_root: str = "data",
+    test_index_class: str = "normal",
+    Sigma: np.ndarray = None,
 ):
     start = time.time()
     np.random.seed(seed)
@@ -52,8 +62,19 @@ def run(
     ):
         deepsad_encoder = deepsad_encoder.to(target_model_device)
         model_device = next(deepsad_encoder.parameters()).device
-
-    X, true_y, known_y = gen_data(mu, delta, n, d, anomaly_rate, known_label_rate)
+    if dataset_name is None:
+        X, true_y, _ = gen_data(mu, delta, n, d, anomaly_rate, 0.0)
+    else:
+        X, true_y, _ = load_odds_data_for_si(
+            dataset_name=dataset_name,
+            root=data_root,
+            train=False,
+            random_state=seed,
+            known_label_rate=0.0,
+            percent_test_sample_size=0.5,
+        )
+        n, d = X.shape
+    # print(f"Number of samples: {n}, Number of features: {d}")
 
     O = anomaly_detection(
         X,
@@ -61,62 +82,60 @@ def run(
         deepsad_encoder=deepsad_encoder,
         deepsad_c=deepsad_c,
     )
-    O = [i for i in O if known_y[i] == -1 or (known_y[i] == 1 and true_y[i] == 0)]
-    true_O = [i for i in range(n) if true_y[i] == 1]
-    # if len(true_O) == 0:
-    #     print(f"No anomalies in seed {seed}, skipping...")
-    #     return None
-    # j = np.random.choice(true_O)
-    Oc = top_k_normal_indices(X, top_k_percent=top_k_normal_percent, deepsad_encoder=deepsad_encoder, deepsad_c=deepsad_c)
-    for i in range(n):
-        if known_y[i] == 1 and true_y[i] == 0 and i not in Oc:
-            Oc.append(i)
-
-    j = np.random.choice(O)
-
-    mu_vec = np.full((n * d, 1), mu)
-    # sigma = np.identity(n * d)
-
-    etj = np.zeros((n * d, 1))
-    etOc = np.zeros((n * d, 1))
-
-    diff = X[j, :] - np.mean(X[Oc, :], axis=0)
-    flip_mask = diff < 0
-
-    etj[j * d : (j + 1) * d] = 1
-
-    flip_indices = j * d + np.where(flip_mask)[0]
-    etj[flip_indices] = -1
-
-    for i in Oc:
-        etOc[i * d : (i + 1) * d] = 1 / len(Oc)
-    for i in Oc:
-        etOc[i * d + np.where(flip_mask)[0]] = -1 / len(Oc)
-    etaj = etj - etOc
+    if test_index_class not in {"normal", "anomaly"}:
+        raise ValueError("test_index_class must be either 'normal' or 'anomaly'.")
+    if test_index_class == "anomaly":
+        candidates = [i for i in O if true_y[i] == 1]
+    else:
+        candidates = [i for i in O if true_y[i] == 0]
+    if len(candidates) == 0:
+        print(f"No '{test_index_class}' points for seed {seed}, skipping...")
+        return None
+    j = np.random.choice(candidates)
+    if dataset_name is not None:
+        X_normal = load_known_normal_data(
+            dataset_name=dataset_name,
+            root=data_root,
+            random_state=seed
+        )
+    else:
+        X_normal = gen_data(mu, 0, 1000, d, 0.0, 1.0)[0]
+    X_mean = np.mean(X_normal, axis=0)
+    # print(f"Distance of test point to normal mean for seed {seed}: {np.sum(np.abs(X[j] - X_mean))}")
+    
+    c = 0
+    etaj = np.zeros(n * d)
+    test_statistic = 0
+    
+    for i in range(d):
+        sign = 1 if X[j, i] - X_mean[i] >= 0 else -1
+        # print(f"Feature {i}, sign: {sign}, X[j, i]: {X[j, i]}, X_mean[i]: {X_mean[i]}")
+        etaj[j * d + i] = sign
+        c += -sign * X_mean[i]
+        test_statistic += sign * (X[j, i] - X_mean[i])
     etajTx = etaj.T @ X.reshape(-1, 1)
+    etajTx = etajTx.reshape(1, 1)
+    # print(f"Test statistic for seed {seed}: {test_statistic}")
     # print(f"etaj^T x for seed {seed}: {etajTx[0][0]}")
+    # print(f"c for seed {seed}: {c}")
 
     mu_vec = np.full((n * d, 1), mu)
     etajTmu = etaj.T.dot(mu_vec)
-    etajTsigmaetaj, a, b = compute_etajTsigmaetaj_a_b(etaj, etajTx, X, n, d, S=None)
+    etajTsigmaetaj, a, b = compute_etajTsigmaetaj_a_b(etaj, etajTx, X, n, d, S=Sigma)
     # print(f"etaj^T sigma etaj for seed {seed}: {etajTsigmaetaj[0][0]}")
     # print(f"Shapes of a and b for seed {seed}: {a.shape}, {b.shape}")
 
     a = a.reshape(n, d)
     b = b.reshape(n, d)
 
-    avg_x_oc = np.mean(X[Oc, :], axis=0)
-    mean_a_oc = np.mean(a[Oc, :], axis=0)
-    mean_b_oc = np.mean(b[Oc, :], axis=0)
-
-    postivie_sign = np.sign(X[j, :] - avg_x_oc)
+    postivie_sign = np.sign(X[j, :] - X_mean)
 
     itv = [-20 * np.sqrt(etajTsigmaetaj[0][0]), 20 * np.sqrt(etajTsigmaetaj[0][0])]
     for i in range(d):
-        new_a = (a[j, i] - mean_a_oc[i]) * postivie_sign[i]
-        new_b = (b[j, i] - mean_b_oc[i]) * postivie_sign[i]
+        new_a = (a[j, i] - X_mean[i]) * postivie_sign[i]
+        new_b = (b[j, i]) * postivie_sign[i]
 
-        if abs(new_b) < 1e-12:
+        if abs(new_b) < 1e-9:
             continue
         z = -new_a / new_b
         if new_b > 0:
@@ -161,34 +180,38 @@ def run(
         else:
             intervals = get_model_intervals_cpu(deepsad_encoder, intervals)
 
-    print(f"Length of intervals after DNN processing for seed {seed}: {len(intervals)}")
-    print(f"Time after DNN processing for seed {seed}: {time.time() - start} seconds")
-    intervals = get_top_k_normal_intervals(
-        intervals, top_k_percent=top_k_normal_percent, deepsad_c=deepsad_c
+    # print(f"Length of intervals after DNN processing for seed {seed}: {len(intervals)}")
+    # print(f"Time after DNN processing for seed {seed}: {time.time() - start} seconds")
+    intervals = get_ad_intervals_fast(
+        intervals, top_k_percent=top_k_percent, deepsad_c=deepsad_c
     )
-    print(f"Length of intervals after AD processing for seed {seed}: {len(intervals)}")
-    print(f"Time after AD processing for seed {seed}: {time.time() - start} seconds")
+    # print(f"Length of intervals after AD processing for seed {seed}: {len(intervals)}")
+    # print(f"Time after AD processing for seed {seed}: {time.time() - start} seconds")
     final_intervals = []
-    known_normals = set(i for i in range(n) if known_y[i] == 1 and true_y[i] == 0)
-    for left, right, Ocz in intervals:
-        Ocz = set(Ocz)
-        Ocz = Ocz.union(known_normals)
-        Ocz = [i for i in Ocz]
-        Ocz = sorted(Ocz)
+    for left, right, Oz in intervals:
+        Oz = sorted(Oz)
         final_intervals.append(
             (
-                left / np.sqrt(etajTsigmaetaj[0][0]),
-                right / np.sqrt(etajTsigmaetaj[0][0]),
-                Ocz,
+                (left + c),
+                (right + c),
+                Oz,
             )
         )
 
     cdf = truncated_cdf(
-        0, 1, final_intervals, Oc, etajTx[0][0] / np.sqrt(etajTsigmaetaj[0][0])
+        0, np.sqrt(etajTsigmaetaj[0][0]), final_intervals, O, (etajTx[0][0] + c)
     )
+    # print full precision cdf value for debugging
+    # print(f"Truncated CDF for seed {seed}: {cdf:.10f}")
     if cdf is None:
         print(f"Warning: CDF computation failed for seed {seed}. Skipping this run.")
         return None
     p_value = 2 * min(cdf, 1 - cdf)
+    if p_value == 0:
+        print(f"Distance of test point to normal mean for seed {seed}: {np.sum(np.abs(X[j] - X_mean))}")
+        print(f"Test statistic for seed {seed}: {test_statistic}")
+        print(f"etaj^T x for seed {seed}: {etajTx[0][0]}")
+        print(f"c for seed {seed}: {c}")
+        print(f"Initial interval for seed {seed}: {itv}")
     print(f"p-value for seed {seed}: {p_value}")
     return p_value
