@@ -1,5 +1,9 @@
 import numpy as np
 import torch
+import scipy.stats
+import mpmath as mp
+
+mp.dps=500
 
 from .detection import anomaly_detection, get_ad_intervals_fast, top_k_normal_indices, get_top_k_normal_intervals
 from .dnn.dnn import get_model_intervals as get_model_intervals_cpu
@@ -131,87 +135,92 @@ def run(
     postivie_sign = np.sign(X[j, :] - X_mean)
 
     itv = [-20 * np.sqrt(etajTsigmaetaj[0][0]), 20 * np.sqrt(etajTsigmaetaj[0][0])]
-    for i in range(d):
-        new_a = (a[j, i] - X_mean[i]) * postivie_sign[i]
-        new_b = (b[j, i]) * postivie_sign[i]
+    # for i in range(d):
+    #     new_a = (a[j, i] - mean_a_oc[i]) * postivie_sign[i]
+    #     new_b = (b[j, i] - mean_b_oc[i]) * postivie_sign[i]
 
-        if abs(new_b) < 1e-9:
-            continue
-        z = -new_a / new_b
-        if new_b > 0:
-            itv = [max(itv[0], z), itv[1]]
-        else:
-            itv = [itv[0], min(itv[1], z)]
+    #     if abs(new_b) < 1e-12:
+    #         continue
+    #     z = -new_a / new_b
+    #     if new_b > 0:
+    #         itv = [max(itv[0], z), itv[1]]
+    #     else:
+    #         itv = [itv[0], min(itv[1], z)]
 
-    itv[0] = itv[0].item() if isinstance(itv[0], np.ndarray) else itv[0]
-    itv[1] = itv[1].item() if isinstance(itv[1], np.ndarray) else itv[1]
-    # print(f"Initial interval for seed {seed}: {itv}")
-    if etajTx[0][0] > itv[1]:
-        return 0.0
+    # itv[0] = itv[0].item() if isinstance(itv[0], np.ndarray) else itv[0]
+    # itv[1] = itv[1].item() if isinstance(itv[1], np.ndarray) else itv[1]
+    # # print(f"Initial interval for seed {seed}: {itv}")
+    # if etajTx[0][0] > itv[1]:
+    #     return 0.0
 
-    intervals = [(itv[0], itv[1], a, b)]
+    # intervals = [(itv[0], itv[1], a, b)]
 
-    if requested_device == "dnn_para":
-        para_device = "cuda" if torch.cuda.is_available() else "cpu"
-        intervals = get_model_intervals_para(deepsad_encoder, intervals, para_device)
-    else:
-        use_cuda_dnn = model_device.type == "cuda"
-        if requested_device == "cpu":
-            use_cuda_dnn = False
-        elif requested_device == "cuda":
-            use_cuda_dnn = True
+    # if requested_device == "dnn_para":
+    #     para_device = "cuda" if torch.cuda.is_available() else "cpu"
+    #     intervals = get_model_intervals_para(deepsad_encoder, intervals, para_device)
+    # else:
+    #     use_cuda_dnn = model_device.type == "cuda"
+    #     if requested_device == "cpu":
+    #         use_cuda_dnn = False
+    #     elif requested_device == "cuda":
+    #         use_cuda_dnn = True
 
-        if use_cuda_dnn:
-            model_dtype = next(deepsad_encoder.parameters()).dtype
-            intervals_gpu = [
-                (
-                    left,
-                    right,
-                    torch.as_tensor(a_i, dtype=model_dtype, device=model_device),
-                    torch.as_tensor(b_i, dtype=model_dtype, device=model_device),
-                )
-                for left, right, a_i, b_i in intervals
-            ]
-            intervals_gpu = get_model_intervals_gpu(deepsad_encoder, intervals_gpu)
-            intervals = [
-                (left, right, a_i.detach().cpu().numpy(), b_i.detach().cpu().numpy())
-                for left, right, a_i, b_i in intervals_gpu
-            ]
-        else:
-            intervals = get_model_intervals_cpu(deepsad_encoder, intervals)
+    #     if use_cuda_dnn:
+    #         model_dtype = next(deepsad_encoder.parameters()).dtype
+    #         intervals_gpu = [
+    #             (
+    #                 left,
+    #                 right,
+    #                 torch.as_tensor(a_i, dtype=model_dtype, device=model_device),
+    #                 torch.as_tensor(b_i, dtype=model_dtype, device=model_device),
+    #             )
+    #             for left, right, a_i, b_i in intervals
+    #         ]
+    #         intervals_gpu = get_model_intervals_gpu(deepsad_encoder, intervals_gpu)
+    #         intervals = [
+    #             (left, right, a_i.detach().cpu().numpy(), b_i.detach().cpu().numpy())
+    #             for left, right, a_i, b_i in intervals_gpu
+    #         ]
+    #     else:
+    #         intervals = get_model_intervals_cpu(deepsad_encoder, intervals)
 
     # print(f"Length of intervals after DNN processing for seed {seed}: {len(intervals)}")
     # print(f"Time after DNN processing for seed {seed}: {time.time() - start} seconds")
-    intervals = get_ad_intervals_fast(
-        intervals, top_k_percent=top_k_percent, deepsad_c=deepsad_c
-    )
+    # intervals = get_ad_intervals_fast(
+    #     intervals, top_k_percent=top_k_percent, deepsad_c=deepsad_c
+    # )
     # print(f"Length of intervals after AD processing for seed {seed}: {len(intervals)}")
     # print(f"Time after AD processing for seed {seed}: {time.time() - start} seconds")
-    final_intervals = []
-    for left, right, Oz in intervals:
-        Oz = sorted(Oz)
-        final_intervals.append(
-            (
-                (left + c),
-                (right + c),
-                j in Oz,
-            )
-        )
+    # final_intervals = []
+    # for left, right, Oz in intervals:
+    #     Oz = [i for i in Oz if known_y[i] == -1 or (known_y[i] == 1 and true_y[i] == 0)]
+    #     Oz = sorted(Oz)
+    #     final_intervals.append(
+    #         (
+    #             left / np.sqrt(etajTsigmaetaj[0][0]),
+    #             right / np.sqrt(etajTsigmaetaj[0][0]),
+    #             Oz,
+    #         )
+    #     )
 
-    cdf = truncated_cdf(
-        0, np.sqrt(etajTsigmaetaj[0][0]), final_intervals, j in O, (etajTx[0][0] + c)
-    )
-    # print full precision cdf value for debugging
-    # print(f"Truncated CDF for seed {seed}: {cdf:.10f}")
+    z = mp.mpf(etajTx[0][0] + c) / mp.sqrt(mp.mpf(etajTsigmaetaj[0][0]))
+
+    cdf = mp.ncdf(z, mu=0, sigma=1)
     if cdf is None:
         print(f"Warning: CDF computation failed for seed {seed}. Skipping this run.")
         return None
+
     p_value = 2 * min(cdf, 1 - cdf)
-    if p_value == 0:
-        print(f"Distance of test point to normal mean for seed {seed}: {np.sum(np.abs(X[j] - X_mean))}")
-        print(f"Test statistic for seed {seed}: {test_statistic}")
-        print(f"etaj^T x for seed {seed}: {etajTx[0][0]}")
-        print(f"c for seed {seed}: {c}")
-        print(f"Initial interval for seed {seed}: {itv}")
-    print(f"p-value for seed {seed}: {p_value}")
-    return p_value
+    p_value = max(p_value, mp.mpf('1e-50'))  # cap at 1e-300 to avoid underflow to 0.0
+
+    # Bonferroni in mpmath (no float conversion yet)
+    # p_value = min(mp.mpf(1), p_value * mp.power(2, n))
+
+    print(f"p-value for seed {seed}: {mp.nstr(p_value, 10)}")
+
+    # Only convert to float if it won't underflow
+    # if p_value < mp.mpf('1e-300'):
+    #     print(f"Warning: p_value too small for float64, returning mpmath value")
+    #     return p_value   # return as mpmath.mpf — don't force float()
+
+    return float(p_value)
