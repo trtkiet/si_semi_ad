@@ -67,9 +67,9 @@ def run(
         deepsad_encoder = deepsad_encoder.to(target_model_device)
         model_device = next(deepsad_encoder.parameters()).device
     if dataset_name is None:
-        X, true_y, _ = gen_data(mu, delta, n, d, anomaly_rate, 0.0)
+        X, true_y, known_y = gen_data(mu, delta, n, d, anomaly_rate, 0.0)
     else:
-        X, true_y, _ = load_odds_data_for_si(
+        X, true_y, known_y = load_odds_data_for_si(
             dataset_name=dataset_name,
             root=data_root,
             train=False,
@@ -77,7 +77,13 @@ def run(
             known_label_rate=0.0,
             percent_test_sample_size=0.5,
         )
+        if np.any(known_y != 0):
+            raise ValueError(
+                "Expected known_y=0 (unknown) for ODDS test split in run_naive()."
+            )
         n, d = X.shape
+    if not np.all(np.isin(known_y, (-1, 0, 1))):
+        raise ValueError("known_y contains invalid labels; expected values in {-1,0,1}.")
     # print(f"Number of samples: {n}, Number of features: {d}")
 
     O = anomaly_detection(
@@ -193,7 +199,7 @@ def run(
     # print(f"Time after AD processing for seed {seed}: {time.time() - start} seconds")
     # final_intervals = []
     # for left, right, Oz in intervals:
-    #     Oz = [i for i in Oz if known_y[i] == -1 or (known_y[i] == 1 and true_y[i] == 0)]
+    #     Oz = [i for i in Oz if known_y[i] == 0 or (known_y[i] == 1 and true_y[i] == 0)]
     #     Oz = sorted(Oz)
     #     final_intervals.append(
     #         (

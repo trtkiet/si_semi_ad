@@ -2,13 +2,20 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from scipy.io import loadmat
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 
 import os
 import torch
 import numpy as np
 import urllib.request
 
+CATEGORICAL_UNIQUE_THRESHOLD = {
+    "arrhythmia": 250,
+    "satimage-2": 0,
+    "thyroid": 0,
+    "annthyroid": 0,
+    "creditcard": 0
+}
 
 class ODDSDataset(Dataset):
     """
@@ -24,13 +31,18 @@ class ODDSDataset(Dataset):
         'satellite': 'https://www.dropbox.com/s/dpzxp8jyr9h93k5/satellite.mat?dl=1',
         'satimage-2': 'https://www.dropbox.com/s/hckgvu9m6fs441p/satimage-2.mat?dl=1',
         'shuttle': 'https://www.dropbox.com/s/mk8ozgisimfn3dw/shuttle.mat?dl=1',
-        'thyroid': 'https://www.dropbox.com/s/bih0e15a0fukftb/thyroid.mat?dl=1'
+        'thyroid': 'https://www.dropbox.com/s/bih0e15a0fukftb/thyroid.mat?dl=1',
+        'musk': 'https://www.dropbox.com/scl/fi/o9nk6gv7pgeouop/musk.mat?rlkey=cjp9trvd1sulnt5u1apg2j46p&e=1&dl=1',
+        'annthyroid': 'https://www.dropbox.com/scl/fi/a0sgvfst8gwvty8/annthyroid.mat?rlkey=t8z9z7jn06a9vsp1muhylteqz&e=1&dl=1',
+        'vowels': 'https://www.dropbox.com/scl/fi/ikz2if1yyz8zbly/vowels.mat?rlkey=8z5ce4g2frcx22xqqko7d7vvk&e=1&dl=1'
     }
 
     # Integer-valued features with low cardinality are treated as categorical and removed.
-    CATEGORICAL_UNIQUE_THRESHOLD = 20
+    
 
-    def __init__(self, root: str, dataset_name: str, train=True, random_state=None, download=False):
+    def __init__(self, root: str, dataset_name: str, train=True, split: str = None,
+                 random_state=None, download=False, reference_ratio: float = 0.3, test_ratio: float = 0.4,
+                 known_normal_ratio: float = 0.7):
         super(Dataset, self).__init__()
 
         self.classes = [0, 1]
@@ -39,7 +51,8 @@ class ODDSDataset(Dataset):
             root = os.path.expanduser(root)
         self.root = Path(root)
         self.dataset_name = dataset_name
-        self.train = train  # training set or test set
+        self.train = train  # backward-compatible flag
+        self.split = split if split is not None else ('train' if train else 'test')
         self.file_name = self.dataset_name + '.mat'
         self.data_file = self.root / self.file_name
 
@@ -48,27 +61,34 @@ class ODDSDataset(Dataset):
 
         mat = loadmat(self.data_file)
         X = mat['X']
-        X = self._keep_numerical_only_features(X)
-        y = mat['y'].ravel()
-        idx_norm = y == 0
-        idx_out = y == 1
+        X = self._keep_numerical_only_features(X, dataset_name=self.dataset_name)
+        y = mat['y'].ravel().astype(np.int64)
 
-        # 60% data for training and 40% for testing; keep outlier ratio
-        X_train_norm, X_test_norm, y_train_norm, y_test_norm = train_test_split(X[idx_norm], y[idx_norm],
-                                                                                test_size=0.4,
-                                                                                random_state=random_state)
-        X_train_out, X_test_out, y_train_out, y_test_out = train_test_split(X[idx_out], y[idx_out],
-                                                                            test_size=0.4,
-                                                                            random_state=random_state)
-        X_train = np.concatenate((X_train_norm, X_train_out))
-        X_test = np.concatenate((X_test_norm, X_test_out))
-        y_train = np.concatenate((y_train_norm, y_train_out))
-        y_test = np.concatenate((y_test_norm, y_test_out))
+        idx_train, idx_test, idx_reference = self._split_indices(
+            y=y,
+            known_normal_ratio=known_normal_ratio,
+            reference_ratio=reference_ratio,
+            test_ratio=test_ratio,
+            random_state=random_state,
+        )
+
+        X_train = X[idx_train]
+        y_train = y[idx_train]
+        X_test = X[idx_test]
+        y_test = y[idx_test]
+        X_reference = X[idx_reference]
+        y_reference = y[idx_reference]
+        
+        # robust_scaler = RobustScaler().fit(X_train)
+        # X_train = robust_scaler.transform(X_train)
+        # X_test = robust_scaler.transform(X_test)
+        # X_reference = robust_scaler.transform(X_reference)
 
         # Standardize data (per feature Z-normalization, i.e. zero-mean and unit variance)
         scaler = StandardScaler().fit(X_train)
         X_train_stand = scaler.transform(X_train)
         X_test_stand = scaler.transform(X_test)
+        X_reference_stand = scaler.transform(X_reference)
 
         # Scale to range [0,1]
         # minmax_scaler = MinMaxScaler().fit(X_train_stand)
@@ -77,54 +97,72 @@ class ODDSDataset(Dataset):
         
         X_train_scaled = X_train_stand
         X_test_scaled = X_test_stand
+        X_reference_scaled = X_reference_stand
 
-        if self.train:
+        if self.split == 'train':
             self.data = torch.tensor(X_train_scaled, dtype=torch.float32)
             self.targets = torch.tensor(y_train, dtype=torch.int64)
-        else:
+        elif self.split == 'test':
             self.data = torch.tensor(X_test_scaled, dtype=torch.float32)
             self.targets = torch.tensor(y_test, dtype=torch.int64)
+        elif self.split == 'reference':
+            self.data = torch.tensor(X_reference_scaled, dtype=torch.float32)
+            self.targets = torch.tensor(y_reference, dtype=torch.int64)
+        else:
+            raise ValueError(f"Unknown split '{self.split}'. Expected 'train', 'test', or 'reference'.")
 
         self.semi_targets = torch.zeros_like(self.targets)
+        if self.split == 'reference':
+            self.semi_targets = torch.ones_like(self.targets)
+
+    @staticmethod
+    def _split_indices(y: np.ndarray, known_normal_ratio: float, reference_ratio: float, test_ratio: float, random_state=None):
+        """Create reference split from known normal first, then split remaining data into train/test."""
+        if not (0.0 <= reference_ratio < 1.0):
+            raise ValueError(f"reference_ratio must be in [0, 1), got {reference_ratio}.")
+        if not (0.0 < test_ratio < 1.0):
+            raise ValueError(f"test_ratio must be in (0, 1), got {test_ratio}.")
+
+        y = np.asarray(y).ravel()
+        idx_all = np.arange(y.shape[0])
+        idx_normal = np.flatnonzero(y == 0)
+
+        if idx_normal.size == 0:
+            raise ValueError("No known normal samples (label 0) found for reference split.")
+
+        split_random_state = 0 if random_state is None else random_state
+        rng = np.random.RandomState(split_random_state)
+
+        n_reference = int(np.floor(known_normal_ratio * reference_ratio * idx_normal.size))
+        if n_reference > 0:
+            idx_reference = np.sort(rng.choice(idx_normal, size=n_reference, replace=False))
+        else:
+            idx_reference = np.array([], dtype=np.int64)
+
+        keep_mask = np.ones(y.shape[0], dtype=bool)
+        keep_mask[idx_reference] = False
+        idx_remaining = idx_all[keep_mask]
+        y_remaining = y[idx_remaining]
+
+        unique_labels, label_counts = np.unique(y_remaining, return_counts=True)
+        stratify_labels = y_remaining if (unique_labels.size > 1 and np.all(label_counts >= 2)) else None
+
+        idx_train, idx_test = train_test_split(
+            idx_remaining,
+            test_size=test_ratio,
+            random_state=split_random_state,
+            stratify=stratify_labels,
+        )
+
+        return idx_train, idx_test, idx_reference
 
     @classmethod
-    def _keep_numerical_only_features(cls, X: np.ndarray) -> np.ndarray:
-        """Keep continuous numeric columns and drop categorical-like features."""
-        X = np.asarray(X)
-        if X.ndim != 2:
-            raise ValueError(f"Expected 2D feature matrix, got shape {X.shape}.")
-
-        n_samples, n_features = X.shape
-        keep_mask = np.zeros(n_features, dtype=bool)
-
-        for col_idx in range(n_features):
-            col_raw = X[:, col_idx]
-
-            try:
-                col = col_raw.astype(np.float64)
-            except (TypeError, ValueError):
-                continue
-
-            finite_col = col[np.isfinite(col)]
-            if finite_col.size == 0:
-                continue
-
-            # Treat low-cardinality integer-valued features as categorical.
-            is_integer_like = np.all(np.isclose(finite_col, np.rint(finite_col)))
-            if is_integer_like:
-                unique_count = np.unique(finite_col).size
-                if unique_count <= cls.CATEGORICAL_UNIQUE_THRESHOLD:
-                    continue
-
-            keep_mask[col_idx] = True
-
-        if not np.any(keep_mask):
-            raise ValueError(
-                "All ODDS features were removed by numerical-only filtering. "
-                "Please adjust categorical filtering thresholds."
-            )
-
-        return X[:, keep_mask].astype(np.float64, copy=False)
+    def _keep_numerical_only_features(self, X, dataset_name):
+        mask = np.array([
+            np.unique(X[:, i]).size > CATEGORICAL_UNIQUE_THRESHOLD[dataset_name]
+            for i in range(X.shape[1])
+        ])
+        return X[:, mask]
 
     def __getitem__(self, index):
         """

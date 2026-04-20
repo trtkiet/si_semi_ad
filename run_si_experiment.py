@@ -27,7 +27,7 @@ def main():
     parser.add_argument(
         "--top-k-percent",
         type=float,
-        default=0.05,
+        default=0.1,
         help="Top k percent for anomaly detection",
     )
     parser.add_argument(
@@ -118,10 +118,18 @@ def main():
         default=None,
         help="If set and --seed is omitted, keep increasing seeds from 0 until this many accepted p-values are collected.",
     )
+    parser.add_argument(
+        "--multiple-testing",
+        type=bool,
+        default=False,
+        help="Find p-values for all test points in top k%",
+    )
     args = parser.parse_args()
 
-    if args.method == "normal":
-        run_fn = run_normal
+    if args.method == "normal" and args.multiple_testing == False: 
+        from si.run import run_one as run_fn
+    elif args.method == "normal" and args.multiple_testing == True:
+        from si.run import run_all as run_fn
     elif args.method == "oc":
         from si.run_oc import run as run_fn
     elif args.method in {"bonferonni", "bonferroni"}:
@@ -146,11 +154,11 @@ def main():
     h_dims = [int(x.strip()) for x in args.h_dims.split(",")]
     model_input_dim = args.d
     if args.dataset_name is not None:
-        X_probe, _, _ = load_odds_data_for_si(
+        X_probe, _ = load_odds_data_for_si(
             dataset_name=args.dataset_name,
             root=args.data_root,
-            random_state=0,
-            known_label_rate=0.0,
+            split='reference',
+            random_state=0
         )
         model_input_dim = X_probe.shape[1]
 
@@ -199,7 +207,7 @@ def main():
         seed = 0
         while len(p_values) < args.target_p_values:
             start = time.time()
-            p_value = run_fn(
+            list_p_value = run_fn(
                 seed=seed,
                 delta=args.delta,
                 n=args.n,
@@ -216,16 +224,20 @@ def main():
                 Sigma=Sigma,
             )
             seed += 1
-            if p_value is None:
+            if len(list_p_value) == 0:
                 continue
-            p_values.append(p_value)
-            if p_value < 0.05:
-                FPR += 1
+            p_values.extend(list_p_value)
+            p_values = [p for p in p_values if p is not None]
+            for p_value in list_p_value:
+                if p_value is None:
+                    continue
+                if p_value < 0.05:
+                    FPR += 1
             times.append(time.time() - start)
     else:
         for seed in seeds:
             start = time.time()
-            p_value = run_fn(
+            list_p_value = run_fn(
                 seed=seed,
                 delta=args.delta,
                 n=args.n,
@@ -241,14 +253,18 @@ def main():
                 test_index_class=args.test_index_class,
                 Sigma=Sigma,
             )
-            if p_value is None:
+            if len(list_p_value) == 0:
                 continue
-            p_values.append(p_value)
-            if p_value < 0.05:
-                FPR += 1
+            p_values.extend(list_p_value)
+            p_values = [p for p in p_values if p is not None]
+            for p_value in list_p_value:
+                if p_value is None:
+                    continue
+                if p_value < 0.05:
+                    FPR += 1
             times.append(time.time() - start)
 
-    print(f"Collected {len(p_values)} p-values with FPR: {FPR / len(p_values) if len(p_values) > 0 else 0:.4f}")
+    print(f"Collected {len(p_values)} p-values with FPs: {FPR}")
     if len(p_values) == 0:
         raise RuntimeError("No valid p-values were produced.")
 
