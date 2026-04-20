@@ -26,89 +26,13 @@ def top_k_normal_indices(X: np.ndarray, top_k_percent: float, deepsad_encoder, d
     normal_indices = np.argpartition(distances, top_k)[:top_k]
     return sorted(normal_indices)
 
-
-def get_ad_intervals(intervals, top_k_percent, deepsad_c):
-    quad_intervals = []
-    for left, right, a, b in intervals:
-        u = a - deepsad_c
-        A = np.sum(b * b, axis=1)
-        B = 2 * np.sum(u * b, axis=1)
-        C = np.sum(u * u, axis=1)
-        quad_intervals.append((left, right, A, B, C))
-
-    new_intervals = []
-    n_pairs_idx = None
-
-    for left, right, A, B, C in quad_intervals:
-        n = len(A)
-
-        if n_pairs_idx is None or n_pairs_idx[0].shape[0] != n * (n - 1) // 2:
-            i_idx, j_idx = np.triu_indices(n, k=1)
-
-        a_p = A[i_idx] - A[j_idx]
-        b_p = B[i_idx] - B[j_idx]
-        c_p = C[i_idx] - C[j_idx]
-
-        lo, hi = left - 1e-5, right + 1e-5
-
-        lin_mask = np.abs(a_p) < 1e-16
-        safe_b = np.where(lin_mask & (np.abs(b_p) > 1e-16), b_p, 1.0)
-        z_lin = np.where(lin_mask & (np.abs(b_p) > 1e-16), -c_p / safe_b, np.inf)
-
-        disc = b_p**2 - 4 * a_p * c_p
-        quad_mask = (~lin_mask) & (disc > 1e-16)
-        safe_denom = np.where(quad_mask, 2 * a_p, 1.0)
-        sqrt_disc = np.where(quad_mask, np.sqrt(np.maximum(0.0, disc)), 0.0)
-        z1 = np.where(quad_mask, (-b_p + sqrt_disc) / safe_denom, np.inf)
-        z2 = np.where(quad_mask, (-b_p - sqrt_disc) / safe_denom, np.inf)
-
-        z_values = []
-        for mask, zs in [
-            (lin_mask & (np.abs(b_p) > 1e-16) & (z_lin >= lo) & (z_lin <= hi), z_lin),
-            (quad_mask & (z1 >= lo) & (z1 <= hi), z1),
-            (quad_mask & (z2 >= lo) & (z2 <= hi), z2),
-        ]:
-            hits = np.where(mask)[0]
-            z_values.extend(zip(zs[hits], i_idx[hits], j_idx[hits]))
-
-        z0 = left
-        distances = A * z0**2 + B * z0 + C
-        indices = np.argsort(distances)
-        top_k = max(1, int(top_k_percent * n))
-
-        position = np.empty(n, dtype=np.intp)
-        position[indices] = np.arange(n)
-
-        if not z_values:
-            new_intervals.append((left, right, sorted(indices[-top_k:])))
-            continue
-
-        z_values.sort(key=lambda x: x[0])
-        previous = left
-
-        for z_val, i, j in z_values:
-            new_intervals.append((previous, z_val, sorted(indices[-top_k:])))
-            previous = z_val
-
-            idx_i = position[i]
-            idx_j = position[j]
-
-            # if abs(idx_i - idx_j) > 1:
-            #     print(f"Warning: swapping non-adjacent {i} and {j} at z={z_val:.4f}")
-
-            indices[idx_i], indices[idx_j] = j, i
-            position[i], position[j] = idx_j, idx_i
-
-        new_intervals.append((previous, right, sorted(indices[-top_k:])))
-
-    return new_intervals
-
 import heapq
 import math
 import numpy as np
 
 
-def get_ad_intervals_fast(intervals, top_k_percent, deepsad_c):
+
+def get_ad_intervals(intervals, top_k_percent, deepsad_c, eps=1e-10):
     quad_intervals = []
     for left, right, a, b in intervals:
         u = a - deepsad_c
@@ -118,6 +42,8 @@ def get_ad_intervals_fast(intervals, top_k_percent, deepsad_c):
         quad_intervals.append((left, right, A, B, C))
 
     new_intervals = []
+    
+    
 
     for left, right, A, B, C in quad_intervals:
         n = len(A)
@@ -139,22 +65,23 @@ def get_ad_intervals_fast(intervals, top_k_percent, deepsad_c):
                 roots = [-dc / db] if abs(db) > 1e-16 else []
             else:
                 disc = db * db - 4.0 * da * dc
-                if disc <= eps:
+                if disc < 0:
                     return None
                 sq = math.sqrt(max(0.0, disc))
                 roots = [(-db - sq) / (2 * da), (-db + sq) / (2 * da)]
 
             for z in sorted(roots):
-                if z <= z_min + eps or z > right + 1e-9:
+                tol = abs(z_min) * 1e-9 + 1e-15
+                if z <= z_min + tol or z > right + tol:
                     continue
                 # Confirm direction: d_i - d_j goes negative → positive here
                 z_t = z + eps
-                if da * z_t * z_t + db * z_t + dc > 0.0:
+                if 2.0 * da * z + db > 0.0:
                     return z
             return None
 
         # --- Initial sort at z = left ---
-        dist0 = A * left * left + B * left + C
+        dist0 = A * (left + eps) * (left + eps) + B * (left + eps) + C
         sorted_order = list(np.argsort(dist0))   # sorted_order[r] = item at rank r (asc. distance)
         rank = np.empty(n, dtype=np.intp)
         for r, item in enumerate(sorted_order):
@@ -165,7 +92,7 @@ def get_ad_intervals_fast(intervals, top_k_percent, deepsad_c):
         heap = []  # (z_crossing, i, j)  where rank[i]+1 == rank[j] at insertion time
         for r in range(n - 1):
             i, j = sorted_order[r], sorted_order[r + 1]
-            z_cross = find_next_crossing(i, j, left - 1e-9)
+            z_cross = find_next_crossing(i, j, left + eps)
             if z_cross is not None:
                 heapq.heappush(heap, (z_cross, i, j))
 
@@ -175,7 +102,7 @@ def get_ad_intervals_fast(intervals, top_k_percent, deepsad_c):
         # --- Kinetic sweep ---
         while heap:
             z_val, i, j = heapq.heappop(heap)
-            if z_val > right + 1e-9:
+            if z_val > right:
                 break
 
             if rank[i] + 1 != rank[j]:
@@ -201,13 +128,13 @@ def get_ad_intervals_fast(intervals, top_k_percent, deepsad_c):
                 if 0 <= r2 < n - 1:
                     ii, jj = sorted_order[r2], sorted_order[r2 + 1]
                     z_cross = find_next_crossing(ii, jj, z_val)
-                    if z_cross is not None and z_cross < right + 1e-9:
+                    if z_cross is not None and z_cross < right:
                         heapq.heappush(heap, (z_cross, ii, jj))
 
         new_intervals.append((previous, right, current_topk))
 
     return new_intervals
-
+        
 def get_top_k_normal_intervals(intervals, top_k_percent, deepsad_c):
     quad_intervals = []
     for left, right, a, b in intervals:
@@ -300,4 +227,131 @@ def get_top_k_normal_intervals(intervals, top_k_percent, deepsad_c):
 
         new_intervals.append((previous, right, current_topk))
 
+    return new_intervals
+
+def get_j_in_topk_intervals(intervals, top_k_percent, deepsad_c, j):
+    quad_intervals = []
+    for left, right, a, b in intervals:
+        u = a - deepsad_c
+        A = np.sum(b * b, axis=1)
+        B = 2 * np.sum(u * b, axis=1)
+        C = np.sum(u * u, axis=1)
+        quad_intervals.append((left, right, A, B, C))
+
+    new_intervals = []
+    
+    for left, right, A, B, C in quad_intervals:
+        n = len(A)
+        top_k = max(1, int(top_k_percent * n))
+        boundary = n - top_k  # items at rank >= boundary are in top-k
+
+        def find_next_crossing(i, j, z_min):
+            """
+            First z in (z_min, right] where d_i crosses from below d_j to above.
+            Precondition: d_i(z_min) <= d_j(z_min).
+            Each quadratic difference has at most 2 roots, checked in O(1).
+            """
+            da = float(A[i] - A[j])
+            db = float(B[i] - B[j])
+            dc = float(C[i] - C[j])
+            eps = 1e-10
+
+            if abs(da) < 1e-16:
+                roots = [-dc / db] if abs(db) > 1e-16 else []
+            else:
+                disc = db * db - 4.0 * da * dc
+                if disc < 0:
+                    return None
+                sq = math.sqrt(max(0.0, disc))
+                roots = [(-db - sq) / (2 * da), (-db + sq) / (2 * da)]
+
+            for z in sorted(roots):
+                tol = abs(z_min) * 1e-9 + 1e-15
+                if z > z_min:
+                    # print(f"Found crossing at z={z:.6f} between items {i} and {j}")
+                    return z
+            return None
+        
+        
+
+        current_z = left + 1e-10
+        while current_z < right:
+            # print(f"Current z: {current_z:.6f}")
+            dist = A * current_z * current_z + B * current_z + C
+            sorted_order = list(np.argsort(dist))
+            rank = np.empty(n, dtype=np.intp)
+            for r, item in enumerate(sorted_order):
+                rank[item] = r
+            
+            next_z = right
+            for i in range(n):
+                if i == j:
+                    continue
+                if rank[i] < rank[j]:
+                    z_cross = find_next_crossing(i, j, current_z)
+                    if z_cross is not None:
+                        next_z = min(next_z, z_cross)
+                else:
+                    z_cross = find_next_crossing(j, i, current_z)
+                    if z_cross is not None:
+                        next_z = min(next_z, z_cross)
+            new_intervals.append((current_z, next_z, rank[j] >= boundary))
+            # print(f"Interval: [{current_z:.6f}, {next_z:.6f}] - j in top-k: {rank[j] >= boundary}")
+            current_z = next_z + 1e-6
+    return new_intervals
+
+def get_j_in_topk_intervals_v2(intervals, top_k_percent, deepsad_c, j):
+    quad_intervals = []
+    for left, right, a, b in intervals:
+        u = a - deepsad_c
+        A = np.sum(b * b, axis=1)
+        B = 2 * np.sum(u * b, axis=1)
+        C = np.sum(u * u, axis=1)
+        quad_intervals.append((left, right, A, B, C))
+    new_intervals = []
+    for left, right, A, B, C in quad_intervals:
+        n = len(A)
+        top_k = max(1, int(top_k_percent * n))
+        boundary = n - top_k  # items at rank >= boundary are in top-k
+        
+        def get_roots_and_signs(i, j):
+            da = float(A[i] - A[j])
+            db = float(B[i] - B[j])
+            dc = float(C[i] - C[j])
+            eps = 1e-10
+
+            if abs(da) < 1e-16:
+                # return sign of linear function 
+                return [(-dc / db, np.sign(db))] if abs(db) > 1e-16 else []
+            else:
+                disc = db * db - 4.0 * da * dc
+                if disc < 0:
+                    return []
+                sq = math.sqrt(max(0.0, disc))
+                return [((-db - sq) / (2 * da), -1 * np.sign(A[i] - A[j])), ((-db + sq) / (2 * da), np.sign(A[i] - A[j]))]
+            
+        distances_at_left = A * (left + 1e-9) * (left + 1e-9) + B * (left + 1e-9) + C
+        sorted_order = list(np.argsort(distances_at_left))   # sorted_order[r] = item at rank r (asc. distance)
+        rank = np.empty(n, dtype=np.intp)
+        
+        smaller_than_j = 0
+        for r, item in enumerate(sorted_order):
+            rank[item] = r
+            if item == j:
+                smaller_than_j = r
+        
+        z_values = []
+        for i in range(n):
+            if i == j:
+                continue
+            z_crossings = get_roots_and_signs(j, i)
+            for z, sign in z_crossings:
+                if left < z <= right:
+                    z_values.append((z, sign))
+        previous = left + 1e-9
+        for z, sign in sorted(z_values):
+            new_intervals.append((previous, z, smaller_than_j >= boundary))
+            previous = z
+            smaller_than_j += sign
+        new_intervals.append((previous, right, smaller_than_j >= boundary))
     return new_intervals
