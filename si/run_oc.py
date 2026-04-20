@@ -16,6 +16,13 @@ from .util import (
 
 import time
 
+def filter_intervals(intervals, etajTx):
+    filtered = []
+    for interval in intervals:
+        if etajTx < interval[0] or etajTx > interval[1]:
+            continue
+        filtered.append(interval)
+    return filtered
 
 def run(
     seed: int,
@@ -179,12 +186,13 @@ def run(
             ]
         else:
             intervals = get_model_intervals_cpu(deepsad_encoder, intervals)
-
+    intervals = filter_intervals(intervals, etajTx[0][0])
     # print(f"Length of intervals after DNN processing for seed {seed}: {len(intervals)}")
     # print(f"Time after DNN processing for seed {seed}: {time.time() - start} seconds")
     intervals = get_ad_intervals_fast(
         intervals, top_k_percent=top_k_percent, deepsad_c=deepsad_c
     )
+    intervals = filter_intervals(intervals, etajTx[0][0])
     # print(f"Length of intervals after AD processing for seed {seed}: {len(intervals)}")
     # print(f"Time after AD processing for seed {seed}: {time.time() - start} seconds")
     final_intervals = []
@@ -194,12 +202,12 @@ def run(
             (
                 (left + c),
                 (right + c),
-                j in Oz,
+                Oz,
             )
         )
 
     cdf = truncated_cdf(
-        0, np.sqrt(etajTsigmaetaj[0][0]), final_intervals, j in O, (etajTx[0][0] + c)
+        0, np.sqrt(etajTsigmaetaj[0][0]), final_intervals, O, (etajTx[0][0] + c)
     )
     # print full precision cdf value for debugging
     # print(f"Truncated CDF for seed {seed}: {cdf:.10f}")

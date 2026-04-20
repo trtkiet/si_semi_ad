@@ -199,9 +199,10 @@ def truncated_cdf(mu, sigma, intervals, O, etajTX):
     for left, right, Oz in intervals:
         # print(f"Processing interval [{left}, {right}] with Oz: {Oz}")
         # print(f"Matching O: {np.array_equal(O, Oz)}")
-        if np.array_equal(O, Oz) is False:
+        if O != Oz:
             if (etajTX >= left) and (etajTX < right):
                 print(f"Different found Oz: {Oz}, O: {O}")
+                return None
             continue
 
         denominator = (

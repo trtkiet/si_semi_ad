@@ -59,7 +59,14 @@ def create_dataloader(
     drop_last=False,
 ):
     semi_labels_processed = semi_labels.copy()
-    semi_labels_processed[semi_labels_processed == -1] = 0
+
+    mask_neg1 = semi_labels == -1
+    mask_0    = semi_labels == 0
+    mask_1    = semi_labels == 1
+
+    semi_labels_processed[mask_neg1] = 0
+    semi_labels_processed[mask_0]    = 1
+    semi_labels_processed[mask_1]    = -1
 
     dataset = TensorDataset(
         torch.tensor(X, dtype=torch.float32),
